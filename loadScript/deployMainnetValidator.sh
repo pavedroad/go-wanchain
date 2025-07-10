@@ -18,10 +18,14 @@ echo ''
 
 echo ''
 read -p "Do you want save your password to disk for auto restart? (N/y): " savepasswd
+read -p "Do you want to upload the host information (CPU, Memory, Disk, etc.) to the Wanchain log server? (N/y): " allowMonitor
 
 
-DOCKERIMG=wanchain/client-go:3.0.1
-
+DOCKERIMG=wanchain/client-go:3.0.2
+GCMODE='full'
+if [ "$GCMODEENV" = "archive" ]; then
+    GCMODE='archive'
+fi
 if [ ${PASSWD} != ${PASSWD2} ]
 then
     echo 'Passwords mismatched'
@@ -47,13 +51,13 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-getAddr=$(sudo docker run -v ~/.wanchain:/root/.wanchain ${DOCKERIMG} /bin/gwan console --exec "personal.newAccount('${PASSWD}')")
+getAddr=$(sudo docker run --privileged -v ~/.wanchain:/root/.wanchain ${DOCKERIMG} /bin/gwan console --exec "personal.newAccount('${PASSWD}')")
 
 ADDR=$getAddr
 
 echo $ADDR
 
-getPK=$(sudo docker run -v ~/.wanchain:/root/.wanchain ${DOCKERIMG} /bin/gwan console --exec "personal.showPublicKey(${ADDR},'${PASSWD}')")
+getPK=$(sudo docker run --privileged -v ~/.wanchain:/root/.wanchain ${DOCKERIMG} /bin/gwan console --exec "personal.showPublicKey(${ADDR},'${PASSWD}')")
 PK=$getPK
 
 echo $PK
@@ -66,9 +70,20 @@ fi
 
 addrNew=`echo ${ADDR} | sed 's/.\(.*\)/\1/' | sed 's/\(.*\)./\1/'`
 
+sudo touch ~/.wanchain/startGwan.sh
+sudo chmod 666 ~/.wanchain/startGwan.sh
+sudo echo '#!/bin/bash'  > ~/.wanchain/startGwan.sh
+sudo echo ''  >> ~/.wanchain/startGwan.sh
+if [ "$allowMonitor" == "Y" ] || [ "$allowMonitor" == "y" ]; then
+    sudo echo "/bin/monitor.sh 1514 &" >> ~/.wanchain/startGwan.sh
+fi
+sudo echo "/bin/gwan --gcmode=${GCMODE} --miner.etherbase ${addrNew} --unlock ${addrNew} --password /root/.wanchain/pw.txt --mine --miner.threads=1 --ethstats ${YOUR_NODE_NAME}:wanchainmainnetvalidator@wanstats.io" >> ~/.wanchain/startGwan.sh
+sudo chmod 755 ~/.wanchain/startGwan.sh
+
 IPCFILE="$HOME/.wanchain/gwan.ipc"
 sudo rm -f $IPCFILE
-sudo docker run --privileged -d --log-opt max-size=100m --log-opt max-file=3 --name gwan -p 17717:17717 -p 17717:17717/udp -v ~/.wanchain:/root/.wanchain ${DOCKERIMG} /bin/gwan --miner.etherbase ${addrNew} --unlock ${addrNew} --password /root/.wanchain/pw.txt --mine --miner.threads=1 --ethstats ${YOUR_NODE_NAME}:wanchainmainnetvalidator@wanstats.io
+
+sudo docker run --privileged -d --log-opt max-size=100m --log-opt max-file=3 --name gwan -p 17717:17717 -p 17717:17717/udp -v ~/.wanchain:/root/.wanchain ${DOCKERIMG} /root/.wanchain/startGwan.sh
 
 if [ $? -ne 0 ]; then
     echo "docker run failed"
@@ -77,10 +92,10 @@ fi
 
 echo 'Please wait a few seconds...'
 
-sleep 5
+sleep 30
 
 if [ "$savepasswd" == "Y" ] || [ "$savepasswd" == "y" ]; then
-    sudo docker container update --restart=always gwan
+    echo ''
 else
     while true
     do
@@ -97,6 +112,10 @@ else
         sleep 1
     done
     sudo rm ~/.wanchain/pw.txt
+    if [ $? -ne 0 ]; then
+        echo "rm pw.txt failed"
+        exit 1
+    fi
 fi
 
 KEYSTOREFILE=$(sudo ls ~/.wanchain/keystore/)
@@ -120,9 +139,12 @@ echo ''
 echo '=================================================='
 echo ''
 
-if [ $(ps -ef | grep -c "gwan") -gt 1 ]; 
+if [ $(ps -ef | grep -v "grep\b" | grep -c "/bin/gwan\b") -gt 0 ];
 then 
-    echo "Validator Start Successfully";
+    if [ "$savepasswd" == "Y" ] || [ "$savepasswd" == "y" ]; then
+        sudo docker container update --restart=always gwan
+    fi
+    echo "Validator Start Success";
 else
     echo "Validator Start Failed";
     echo "Please use command 'sudo docker logs gwan' to check reason." 
